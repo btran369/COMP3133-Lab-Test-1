@@ -29,8 +29,8 @@ app.use("/api/users", userRoutes);
 const ROOMS = ["devops", "cloud computing", "covid19", "sports", "nodeJS", "computers", "gaming"];
 
 function pmRoomName(userA, userB) {
-  const [a, b] = [String(userA).trim(), String(userB).trim()].sort();
-  return `pm:${a}__${b}`;
+    const [a, b] = [String(userA).trim(), String(userB).trim()].sort();
+    return `pm:${a}__${b}`;
 }
 
 
@@ -54,7 +54,7 @@ io.on("connection", (socket) => {
     const username = socket.data.username;
     userSockets.set(username, socket.id);
 
-    
+
 
     // Send rooms list and current online users
     socket.emit("rooms:list", ROOMS);
@@ -64,75 +64,39 @@ io.on("connection", (socket) => {
         userSockets.delete(username);
         io.emit("users:online", Array.from(userSockets.keys()).sort());
     });
-    // Open private chat "room" with another user + load history
-// socket.on("pm:open", async ({ with_user }) => {
-//   const other = String(with_user || "").trim();
-//   if (!other) return;
 
-//   // Leave previous PM room (if any)
-//   if (socket.data.pmRoom) {
-//     socket.leave(socket.data.pmRoom);
-//   }
+    socket.on("pm:open", async ({ with_user }) => {
+        try {
+            const other = String(with_user || "").trim();
+            if (!other) return;
 
-//   const room = pmRoomName(username, other);
-//   socket.join(room);
+            console.log(`[pm:open] ${username} opening with ${other}`);
 
-//   socket.data.pmRoom = room;
-//   socket.data.pmWith = other;
+            if (socket.data.pmRoom) socket.leave(socket.data.pmRoom);
 
-//   // Load last 50 messages between these 2 users (both directions)
-//   const history = await PrivateMessage.find({
-//     $or: [
-//       { from_user: username, to_user: other },
-//       { from_user: other, to_user: username }
-//     ]
-//   })
-//     .sort({ date_sent: -1 })
-//     .limit(50)
-//     .lean();
+            const room = pmRoomName(username, other);
+            socket.join(room);
+            socket.data.pmRoom = room;
+            socket.data.pmWith = other;
 
-//   socket.emit(
-//     "pm:history",
-//     history.reverse().map((m) => ({
-//       from_user: m.from_user,
-//       to_user: m.to_user,
-//       message: m.message,
-//       date_sent: m.date_sent
-//     }))
-//   );
-// });
-socket.on("pm:open", async ({ with_user }) => {
-  try {
-    const other = String(with_user || "").trim();
-    if (!other) return;
+            const history = await PrivateMessage.find({
+                $or: [
+                    { from_user: username, to_user: other },
+                    { from_user: other, to_user: username }
+                ]
+            })
+                .sort({ date_sent: -1 })
+                .limit(50)
+                .lean();
 
-    console.log(`[pm:open] ${username} opening with ${other}`);
+            console.log(`[pm:open] history count=${history.length} room=${room}`);
 
-    if (socket.data.pmRoom) socket.leave(socket.data.pmRoom);
-
-    const room = pmRoomName(username, other);
-    socket.join(room);
-    socket.data.pmRoom = room;
-    socket.data.pmWith = other;
-
-    const history = await PrivateMessage.find({
-      $or: [
-        { from_user: username, to_user: other },
-        { from_user: other, to_user: username }
-      ]
-    })
-      .sort({ date_sent: -1 })
-      .limit(50)
-      .lean();
-
-    console.log(`[pm:open] history count=${history.length} room=${room}`);
-
-    socket.emit("pm:history", history.reverse());
-  } catch (err) {
-    console.error("[pm:open] ERROR:", err);
-    socket.emit("error:msg", "Failed to load PM history");
-  }
-});
+            socket.emit("pm:history", history.reverse());
+        } catch (err) {
+            console.error("[pm:open] ERROR:", err);
+            socket.emit("error:msg", "Failed to load PM history");
+        }
+    });
 
 
 
@@ -210,78 +174,51 @@ socket.on("pm:open", async ({ with_user }) => {
         });
     });
 
-    // Private message
-// socket.on("pm:message", async ({ to_user, message }) => {
-//   const to = String(to_user || "").trim();
-//   const text = String(message || "").trim();
-//   if (!to || !text) return;
+    socket.on("pm:message", async ({ to_user, message }) => {
+        try {
+            const to = String(to_user || "").trim();
+            const text = String(message || "").trim();
+            if (!to || !text) return;
 
-//   const saved = await PrivateMessage.create({
-//     from_user: username,
-//     to_user: to,
-//     message: text
-//   });
+            console.log(`[pm:message] ${username} -> ${to}: ${text}`);
 
-//   const payload = {
-//     from_user: saved.from_user,
-//     to_user: saved.to_user,
-//     message: saved.message,
-//     date_sent: saved.date_sent
-//   };
+            const saved = await PrivateMessage.create({
+                from_user: username,
+                to_user: to,
+                message: text
+            });
 
-//   // Emit to the private room for this pair
-//   const room = pmRoomName(username, to);
-//   io.to(room).emit("pm:message", payload);
+            const payload = {
+                from_user: saved.from_user,
+                to_user: saved.to_user,
+                message: saved.message,
+                date_sent: saved.date_sent
+            };
 
-//   // Fallback: if receiver hasn't opened that PM yet, still deliver live
-//   const toSocketId = userSockets.get(to);
-//   if (toSocketId) io.to(toSocketId).emit("pm:message", payload);
-// });
-socket.on("pm:message", async ({ to_user, message }) => {
-  try {
-    const to = String(to_user || "").trim();
-    const text = String(message || "").trim();
-    if (!to || !text) return;
+            const room = pmRoomName(username, to);
+            io.to(room).emit("pm:message", payload);
 
-    console.log(`[pm:message] ${username} -> ${to}: ${text}`);
-
-    const saved = await PrivateMessage.create({
-      from_user: username,
-      to_user: to,
-      message: text
+            const toSocketId = userSockets.get(to);
+            if (toSocketId) io.to(toSocketId).emit("pm:message", payload);
+        } catch (err) {
+            console.error("[pm:message] ERROR:", err);
+            socket.emit("error:msg", "Failed to send private message");
+        }
     });
-
-    const payload = {
-      from_user: saved.from_user,
-      to_user: saved.to_user,
-      message: saved.message,
-      date_sent: saved.date_sent
-    };
-
-    const room = pmRoomName(username, to);
-    io.to(room).emit("pm:message", payload);
-
-    const toSocketId = userSockets.get(to);
-    if (toSocketId) io.to(toSocketId).emit("pm:message", payload);
-  } catch (err) {
-    console.error("[pm:message] ERROR:", err);
-    socket.emit("error:msg", "Failed to send private message");
-  }
-});
 
 
 
     // Typing indicator for user-to-user chat
-socket.on("pm:typing", ({ to_user, isTyping }) => {
-  const to = String(to_user || "").trim();
-  if (!to) return;
+    socket.on("pm:typing", ({ to_user, isTyping }) => {
+        const to = String(to_user || "").trim();
+        if (!to) return;
 
-  const room = pmRoomName(username, to);
-  socket.to(room).emit("pm:typing", {
-    from_user: username,
-    isTyping: !!isTyping
-  });
-});
+        const room = pmRoomName(username, to);
+        socket.to(room).emit("pm:typing", {
+            from_user: username,
+            isTyping: !!isTyping
+        });
+    });
 
 
     // Typing indicator for room chat
