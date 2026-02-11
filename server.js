@@ -28,9 +28,15 @@ app.use("/api/users", userRoutes);
 // Rooms list (predefined)
 const ROOMS = ["devops", "cloud computing", "covid19", "sports", "nodeJS", "computers", "gaming"];
 
+function pmRoomName(userA, userB) {
+  const [a, b] = [String(userA).trim(), String(userB).trim()].sort();
+  return `pm:${a}__${b}`;
+}
+
+
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" }
+    cors: { origin: "*" }
 });
 
 // username to socketId map for private msg
@@ -38,102 +44,206 @@ const userSockets = new Map();
 
 // Simple auth: username passed in handshake query
 io.use((socket, next) => {
-  const username = String(socket.handshake.query.username || "").trim();
-  if (!username) return next(new Error("username required"));
-  socket.data.username = username;
-  next();
+    const username = String(socket.handshake.query.username || "").trim();
+    if (!username) return next(new Error("username required"));
+    socket.data.username = username;
+    next();
 });
 
 io.on("connection", (socket) => {
-  const username = socket.data.username;
-  userSockets.set(username, socket.id);
+    const username = socket.data.username;
+    userSockets.set(username, socket.id);
 
-  // Send rooms list and current online users
-  socket.emit("rooms:list", ROOMS);
-  io.emit("users:online", Array.from(userSockets.keys()).sort());
+    
 
-  socket.on("disconnect", () => {
-    userSockets.delete(username);
+    // Send rooms list and current online users
+    socket.emit("rooms:list", ROOMS);
     io.emit("users:online", Array.from(userSockets.keys()).sort());
-  });
 
-  // Join room
-  socket.on("room:join", async (room) => {
-    room = String(room || "").trim();
-    if (!ROOMS.includes(room)) {
-      socket.emit("error:msg", "Invalid room");
-      return;
-    }
+    socket.on("disconnect", () => {
+        userSockets.delete(username);
+        io.emit("users:online", Array.from(userSockets.keys()).sort());
+    });
+    // Open private chat "room" with another user + load history
+// socket.on("pm:open", async ({ with_user }) => {
+//   const other = String(with_user || "").trim();
+//   if (!other) return;
 
-    // Leave current room if user is in room
-    if (socket.data.room) {
-      socket.leave(socket.data.room);
-      socket.to(socket.data.room).emit("room:system", `${username} left the room`);
-    }
+//   // Leave previous PM room (if any)
+//   if (socket.data.pmRoom) {
+//     socket.leave(socket.data.pmRoom);
+//   }
 
+//   const room = pmRoomName(username, other);
+//   socket.join(room);
+
+//   socket.data.pmRoom = room;
+//   socket.data.pmWith = other;
+
+//   // Load last 50 messages between these 2 users (both directions)
+//   const history = await PrivateMessage.find({
+//     $or: [
+//       { from_user: username, to_user: other },
+//       { from_user: other, to_user: username }
+//     ]
+//   })
+//     .sort({ date_sent: -1 })
+//     .limit(50)
+//     .lean();
+
+//   socket.emit(
+//     "pm:history",
+//     history.reverse().map((m) => ({
+//       from_user: m.from_user,
+//       to_user: m.to_user,
+//       message: m.message,
+//       date_sent: m.date_sent
+//     }))
+//   );
+// });
+socket.on("pm:open", async ({ with_user }) => {
+  try {
+    const other = String(with_user || "").trim();
+    if (!other) return;
+
+    console.log(`[pm:open] ${username} opening with ${other}`);
+
+    if (socket.data.pmRoom) socket.leave(socket.data.pmRoom);
+
+    const room = pmRoomName(username, other);
     socket.join(room);
-    socket.data.room = room;
+    socket.data.pmRoom = room;
+    socket.data.pmWith = other;
 
-    socket.emit("room:joined", room);
-    socket.to(room).emit("room:system", `${username} joined the room`);
-
-    // Load last 50 group messages for room
-    const history = await GroupMessage.find({ room })
+    const history = await PrivateMessage.find({
+      $or: [
+        { from_user: username, to_user: other },
+        { from_user: other, to_user: username }
+      ]
+    })
       .sort({ date_sent: -1 })
       .limit(50)
       .lean();
 
-    socket.emit(
-      "room:history",
-      history.reverse().map((m) => ({
-        from_user: m.from_user,
-        room: m.room,
-        message: m.message,
-        date_sent: m.date_sent
-      }))
-    );
-  });
+    console.log(`[pm:open] history count=${history.length} room=${room}`);
 
-  // Leave room
-  socket.on("room:leave", () => {
-    const room = socket.data.room;
-    if (!room) return;
-    socket.leave(room);
-    socket.to(room).emit("room:system", `${username} left the room`);
-    socket.data.room = null;
-    socket.emit("room:left");
-  });
+    socket.emit("pm:history", history.reverse());
+  } catch (err) {
+    console.error("[pm:open] ERROR:", err);
+    socket.emit("error:msg", "Failed to load PM history");
+  }
+});
 
-  // Group message (room-based)
-  socket.on("room:message", async (text) => {
-    const room = socket.data.room;
-    if (!room) {
-      socket.emit("error:msg", "Join a room first");
-      return;
-    }
 
-    const message = String(text || "").trim();
-    if (!message) return;
 
-    const saved = await GroupMessage.create({
-      from_user: username,
-      room,
-      message
+
+
+    // Join room
+    socket.on("room:join", async (room) => {
+        room = String(room || "").trim();
+        if (!ROOMS.includes(room)) {
+            socket.emit("error:msg", "Invalid room");
+            return;
+        }
+
+        // Leave current room if user is in room
+        if (socket.data.room) {
+            socket.leave(socket.data.room);
+            socket.to(socket.data.room).emit("room:system", `${username} left the room`);
+        }
+
+        socket.join(room);
+        socket.data.room = room;
+
+        socket.emit("room:joined", room);
+        socket.to(room).emit("room:system", `${username} joined the room`);
+
+        // Load last 50 group messages for room
+        const history = await GroupMessage.find({ room })
+            .sort({ date_sent: -1 })
+            .limit(50)
+            .lean();
+
+        socket.emit(
+            "room:history",
+            history.reverse().map((m) => ({
+                from_user: m.from_user,
+                room: m.room,
+                message: m.message,
+                date_sent: m.date_sent
+            }))
+        );
     });
 
-    io.to(room).emit("room:message", {
-      from_user: saved.from_user,
-      room: saved.room,
-      message: saved.message,
-      date_sent: saved.date_sent
+    // Leave room
+    socket.on("room:leave", () => {
+        const room = socket.data.room;
+        if (!room) return;
+        socket.leave(room);
+        socket.to(room).emit("room:system", `${username} left the room`);
+        socket.data.room = null;
+        socket.emit("room:left");
     });
-  });
 
-  // Private message
-  socket.on("pm:message", async ({ to_user, message }) => {
+    // Group message (room-based)
+    socket.on("room:message", async (text) => {
+        const room = socket.data.room;
+        if (!room) {
+            socket.emit("error:msg", "Join a room first");
+            return;
+        }
+
+        const message = String(text || "").trim();
+        if (!message) return;
+
+        const saved = await GroupMessage.create({
+            from_user: username,
+            room,
+            message
+        });
+
+        io.to(room).emit("room:message", {
+            from_user: saved.from_user,
+            room: saved.room,
+            message: saved.message,
+            date_sent: saved.date_sent
+        });
+    });
+
+    // Private message
+// socket.on("pm:message", async ({ to_user, message }) => {
+//   const to = String(to_user || "").trim();
+//   const text = String(message || "").trim();
+//   if (!to || !text) return;
+
+//   const saved = await PrivateMessage.create({
+//     from_user: username,
+//     to_user: to,
+//     message: text
+//   });
+
+//   const payload = {
+//     from_user: saved.from_user,
+//     to_user: saved.to_user,
+//     message: saved.message,
+//     date_sent: saved.date_sent
+//   };
+
+//   // Emit to the private room for this pair
+//   const room = pmRoomName(username, to);
+//   io.to(room).emit("pm:message", payload);
+
+//   // Fallback: if receiver hasn't opened that PM yet, still deliver live
+//   const toSocketId = userSockets.get(to);
+//   if (toSocketId) io.to(toSocketId).emit("pm:message", payload);
+// });
+socket.on("pm:message", async ({ to_user, message }) => {
+  try {
     const to = String(to_user || "").trim();
     const text = String(message || "").trim();
     if (!to || !text) return;
+
+    console.log(`[pm:message] ${username} -> ${to}: ${text}`);
 
     const saved = await PrivateMessage.create({
       from_user: username,
@@ -148,38 +258,44 @@ io.on("connection", (socket) => {
       date_sent: saved.date_sent
     };
 
-    // Send to receiver if online
+    const room = pmRoomName(username, to);
+    io.to(room).emit("pm:message", payload);
+
     const toSocketId = userSockets.get(to);
     if (toSocketId) io.to(toSocketId).emit("pm:message", payload);
+  } catch (err) {
+    console.error("[pm:message] ERROR:", err);
+    socket.emit("error:msg", "Failed to send private message");
+  }
+});
 
-    // Echo back to sender for confirmation
-    socket.emit("pm:message", payload);
+
+
+    // Typing indicator for user-to-user chat
+socket.on("pm:typing", ({ to_user, isTyping }) => {
+  const to = String(to_user || "").trim();
+  if (!to) return;
+
+  const room = pmRoomName(username, to);
+  socket.to(room).emit("pm:typing", {
+    from_user: username,
+    isTyping: !!isTyping
   });
+});
 
-  // Typing indicator for user-tp-user chat
-  socket.on("pm:typing", ({ to_user, isTyping }) => {
-    const to = String(to_user || "").trim();
-    const toSocketId = userSockets.get(to);
-    if (!toSocketId) return;
 
-    io.to(toSocketId).emit("pm:typing", {
-      from_user: username,
-      isTyping: !!isTyping
+    // Typing indicator for room chat
+    socket.on("room:typing", (isTyping) => {
+        const room = socket.data.room;
+        if (!room) return;
+        socket.to(room).emit("room:typing", { from_user: username, isTyping: !!isTyping });
     });
-  });
-
-  // Typing indicator for room chat
-  socket.on("room:typing", (isTyping) => {
-    const room = socket.data.room;
-    if (!room) return;
-    socket.to(room).emit("room:typing", { from_user: username, isTyping: !!isTyping });
-  });
 });
 
 // Start
 (async () => {
-  await connectDB(process.env.MONGO_URI);
+    await connectDB(process.env.MONGO_URI);
 
-  const port = Number(process.env.PORT || 3000);
-  server.listen(port, () => console.log(`Server running http://localhost:${port}`));
+    const port = Number(process.env.PORT || 3000);
+    server.listen(port, () => console.log(`Server running http://localhost:${port}`));
 })();
